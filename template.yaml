@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  reviewiq — AI Product Review Intelligence Agent.
+  Phase 1 foundation: hello-world Lambda + API Gateway, 5 DynamoDB tables,
+  an S3 data bucket, and an SQS ingestion queue with a dead-letter queue.
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures:
+      - arm64
+    Timeout: 30
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+
+Resources:
+
+  # ----------------------------------------------------------------------------
+  # Lambda — health check (proves the API + Lambda wiring; kept as a liveness probe)
+  # ----------------------------------------------------------------------------
+  HelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: reviewiq-hello
+      CodeUri: lambdas/hello/
+      Handler: lambda_function.handler
+      Description: Health-check endpoint that confirms the API + Lambda wiring works.
+      Events:
+        HelloApi:
+          Type: Api
+          Properties:
+            Path: /hello
+            Method: get
+
+  # ----------------------------------------------------------------------------
+  # DynamoDB — 5 tables, all on-demand (PAY_PER_REQUEST) so they cost ~nothing idle
+  # ----------------------------------------------------------------------------
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-users"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH          # partition key
+
+  StoresTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-stores"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: store_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: store_id
+          KeyType: RANGE         # sort key — many stores per user
+
+  ShopifyTokensTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-shopify-tokens"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: store_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: store_id
+          KeyType: HASH
+
+  ReviewsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-reviews"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: review_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: review_id
+          KeyType: RANGE
+
+  ReportsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-reports"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: report_date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: report_date
+          KeyType: RANGE
+
+  # ----------------------------------------------------------------------------
+  # S3 — private data bucket for raw reviews, report archives, and KB docs.
+  # No BucketName set on purpose: CloudFormation generates a globally-unique name.
+  # ----------------------------------------------------------------------------
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+  # ----------------------------------------------------------------------------
+  # SQS — ingestion queue + dead-letter queue.
+  # Big CSV/Excel uploads are handed off here so the API can return immediately.
+  # Failed messages retry a few times, then land in the DLQ for inspection.
+  # ----------------------------------------------------------------------------
+  IngestDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-ingest-dlq"
+      MessageRetentionPeriod: 1209600   # 14 days (max) — time to inspect failures
+
+  IngestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-ingest"
+      VisibilityTimeout: 180            # >= 6x the worker Lambda timeout (added later)
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt IngestDeadLetterQueue.Arn
+        maxReceiveCount: 3              # 3 tries, then off to the DLQ
+
+Outputs:
+  HelloApiUrl:
+    Description: Health-check URL.
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/hello"
+  DataBucketName:
+    Description: S3 bucket for reviews, reports, and knowledge-base docs.
+    Value: !Ref DataBucket
+  IngestQueueUrl:
+    Description: SQS ingestion queue URL.
+    Value: !Ref IngestQueue
+  UsersTableName:
+    Value: !Ref UsersTable
+  StoresTableName:
+    Value: !Ref StoresTable
+  ShopifyTokensTableName:
+    Value: !Ref ShopifyTokensTable
+  ReviewsTableName:
+    Value: !Ref ReviewsTable
+  ReportsTableName:
+    Value: !Ref ReportsTable
