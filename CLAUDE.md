@@ -77,7 +77,7 @@ reviewiq/
   `reviewiq-databucket-xsytttdtxkh7` (private, AES256, versioned), SQS `reviewiq-ingest` + DLQ
   `reviewiq-ingest-dlq` (maxReceiveCount 3), hello Lambda + API Gateway. All verified live via CLI.
   Deploys run by Claude via configured CLI (owner opted "you run it"). Per-Lambda IAM: SAM auto-creates
-  execution roles; custom least-privilege deferred to Phase 6. Not committed to git yet.
+  execution roles; custom least-privilege deferred to Phase 6. Committed + pushed: `41b48af`.
   **Next: Phase 2 — review ingestion (ingestReviews → SQS → worker; Shopify OAuth; Judge.me pull).**
 
 ## Conventions

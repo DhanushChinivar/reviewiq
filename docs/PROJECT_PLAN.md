@@ -585,15 +585,15 @@ P002,Phone Case,1,"Cracked after one drop",2026-06-03,Trustpilot
 
 ## Build Phases
 
-### Phase 1 — AWS Foundation (Week 1)
-- [ ] AWS account setup + billing alerts
-- [ ] S3 buckets created with correct structure
-- [ ] DynamoDB tables created (all 5)
-- [ ] SQS queue + dead-letter queue created
-- [ ] IAM roles created per Lambda
-- [ ] Basic Lambda + API Gateway hello world
-- [ ] CloudWatch log groups configured
-- [ ] Test with Postman
+### Phase 1 — AWS Foundation (Week 1) ✅ COMPLETE
+- [x] AWS account setup + billing alerts (`reviewiq-monthly-cost`, $10/mo)
+- [x] S3 bucket created (`reviewiq-databucket-xsytttdtxkh7`, private/AES256/versioned)
+- [x] DynamoDB tables created (all 5, PAY_PER_REQUEST)
+- [x] SQS queue + dead-letter queue created (`reviewiq-ingest` + `-dlq`)
+- [x] IAM roles (SAM auto-created execution roles; least-privilege deferred to Phase 6)
+- [x] Basic Lambda + API Gateway hello world (health check 200 at `/Prod/hello`)
+- [x] CloudWatch log groups configured
+- [x] Verified live via AWS CLI (deployed as stack `reviewiq`, `us-east-1`)
 
 ### Phase 2 — Review Ingestion (Week 2)
 - [ ] ingestReviews Lambda (CSV + Excel via openpyxl)
