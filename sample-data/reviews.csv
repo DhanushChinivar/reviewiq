@@ -1,0 +1,6 @@
+product_id,product_name,rating,review_text,date,platform
+P001,Wireless Headphones,5,Amazing sound quality,2026-06-01,Amazon
+P001,Wireless Headphones,2,Battery dies after 3 hours,2026-06-02,Amazon
+P002,Phone Case,4,Great protection,2026-06-01,Google
+P002,Phone Case,1,Cracked after one drop,2026-06-03,Trustpilot
+P003,USB Cable,3,Works but feels cheap,2026-06-02,Amazon

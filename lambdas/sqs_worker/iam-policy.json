@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ConsumeIngestQueue",
+      "Effect": "Allow",
+      "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      "Resource": "arn:aws:sqs:us-east-1:377228489522:reviewiq-ingest"
+    },
+    {
+      "Sid": "WriteReviews",
+      "Effect": "Allow",
+      "Action": "dynamodb:PutItem",
+      "Resource": "arn:aws:dynamodb:us-east-1:377228489522:table/reviewiq-reviews"
+    },
+    {
+      "Sid": "ReadUploads",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::reviewiq-data/*"
+    }
+  ]
+}
