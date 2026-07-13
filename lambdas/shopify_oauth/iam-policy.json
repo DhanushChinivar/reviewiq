@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EncryptShopifyToken",
+      "Effect": "Allow",
+      "Action": "kms:Encrypt",
+      "Resource": "arn:aws:kms:us-east-1:377228489522:key/fe81e30b-26a3-4469-a4b1-81ec83c6d680"
+    },
+    {
+      "Sid": "WriteTokens",
+      "Effect": "Allow",
+      "Action": "dynamodb:PutItem",
+      "Resource": "arn:aws:dynamodb:us-east-1:377228489522:table/reviewiq-shopify-tokens"
+    }
+  ]
+}
