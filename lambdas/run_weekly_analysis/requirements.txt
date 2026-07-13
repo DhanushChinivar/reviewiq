@@ -1,0 +1,1 @@
+# boto3 (incl. bedrock-runtime) is preinstalled in the AWS Lambda Python runtime.
