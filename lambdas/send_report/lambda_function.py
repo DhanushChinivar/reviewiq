@@ -1,0 +1,114 @@
+"""reviewiq — sendReport Lambda.
+
+Fetches a user's latest report (summary row from reviewiq-reports + full JSON
+from S3), renders an HTML intelligence email, and sends it via Amazon SES.
+
+Triggered by runWeeklyAnalysis (or manually). Event may include:
+  {"user_id": "...", "recipient": "..."}  (both optional; sensible defaults)
+
+SES is in sandbox mode, so sender and recipient must both be verified identities.
+"""
+
+import json
+import logging
+import os
+
+import boto3
+from boto3.dynamodb.conditions import Key
+
+logger = logging.getLogger()
+logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+
+ses = boto3.client("ses")
+s3 = boto3.client("s3")
+dynamodb = boto3.resource("dynamodb")
+reports_table = dynamodb.Table(os.environ["REPORTS_TABLE"])
+DATA_BUCKET = os.environ["DATA_BUCKET"]
+SENDER = os.environ["SENDER_EMAIL"]
+DEFAULT_RECIPIENT = os.environ["DEFAULT_RECIPIENT"]
+
+
+def handler(event, context):
+    event = event or {}
+    user_id = event.get("user_id", "u123")
+    recipient = event.get("recipient", DEFAULT_RECIPIENT)
+
+    # Latest report for this user (SK = report_date, newest first).
+    resp = reports_table.query(
+        KeyConditionExpression=Key("user_id").eq(user_id),
+        ScanIndexForward=False,
+        Limit=1,
+    )
+    rows = resp.get("Items", [])
+    if not rows:
+        return {"status": "no_report", "user_id": user_id}
+    row = rows[0]
+
+    obj = s3.get_object(Bucket=DATA_BUCKET, Key=row["s3_key"])
+    report = json.loads(obj["Body"].read())
+
+    subject = f"reviewiq weekly report — {row.get('report_date')}"
+    ses.send_email(
+        Source=SENDER,
+        Destination={"ToAddresses": [recipient]},
+        Message={
+            "Subject": {"Data": subject},
+            "Body": {"Html": {"Data": _render_html(report, row)}},
+        },
+    )
+    logger.info(json.dumps({"event": "report_emailed", "user_id": user_id, "to": recipient}))
+    return {"status": "sent", "to": recipient, "report_date": row.get("report_date")}
+
+
+def _esc(s):
+    return (str(s) if s is not None else "").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _render_html(report, row):
+    prio = {"red": "\U0001f534", "yellow": "\U0001f7e1", "green": "\U0001f7e2"}
+
+    theme_rows = ""
+    for t in report.get("themes", []):
+        actions = "".join(f"<li>{_esc(a)}</li>" for a in t.get("recommended_actions", []))
+        theme_rows += (
+            "<tr>"
+            f"<td style='padding:8px;border-bottom:1px solid #eee'>{prio.get(t.get('priority'), '')} <b>{_esc(t.get('theme'))}</b></td>"
+            f"<td style='padding:8px;border-bottom:1px solid #eee'>{_esc(t.get('mentions'))}</td>"
+            f"<td style='padding:8px;border-bottom:1px solid #eee'>{_esc(t.get('severity'))}</td>"
+            f"<td style='padding:8px;border-bottom:1px solid #eee'><ul style='margin:0;padding-left:18px'>{actions}</ul></td>"
+            "</tr>"
+        )
+
+    praises = "".join(f"<li>{_esc(p.get('theme'))} ({_esc(p.get('mentions'))})</li>" for p in report.get("top_praises", []))
+    anomalies = "".join(f"<li>{_esc(a)}</li>" for a in report.get("anomalies", []))
+    products = "".join(
+        "<tr>"
+        f"<td style='padding:6px;border-bottom:1px solid #eee'>{_esc(p.get('product_name'))}</td>"
+        f"<td style='padding:6px;border-bottom:1px solid #eee'>{_esc(p.get('sentiment_score'))}</td>"
+        f"<td style='padding:6px;border-bottom:1px solid #eee'>{_esc(p.get('review_count'))}</td>"
+        "</tr>"
+        for p in report.get("products", [])
+    )
+
+    return f"""\
+<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#222">
+  <h1 style="color:#c0392b;margin-bottom:0">reviewiq — Weekly Report</h1>
+  <p style="color:#777;margin-top:4px">{_esc(row.get('report_date'))} &middot; {_esc(row.get('review_count'))} reviews analysed</p>
+  <div style="background:#f4f1ea;border-radius:8px;padding:16px;margin:16px 0">
+    <div style="font-size:30px;font-weight:bold">Sentiment: {_esc(report.get('sentiment_score'))}/100</div>
+    <p style="margin:8px 0 0">{_esc(report.get('week_summary'))}</p>
+  </div>
+  <h2>Priority Themes</h2>
+  <table style="width:100%;border-collapse:collapse;font-size:14px">
+    <tr style="text-align:left;background:#fafafa"><th style="padding:8px">Theme</th><th style="padding:8px">Mentions</th><th style="padding:8px">Severity</th><th style="padding:8px">Recommended actions</th></tr>
+    {theme_rows}
+  </table>
+  <h2>Top Praises</h2><ul>{praises or '<li>None</li>'}</ul>
+  <h2>Anomalies</h2><ul>{anomalies or '<li>None</li>'}</ul>
+  <h2>Products</h2>
+  <table style="width:100%;border-collapse:collapse;font-size:14px">
+    <tr style="text-align:left;background:#fafafa"><th style="padding:6px">Product</th><th style="padding:6px">Sentiment</th><th style="padding:6px">Reviews</th></tr>
+    {products}
+  </table>
+  <p style="color:#999;font-size:12px;margin-top:24px">Confidence: {_esc(report.get('confidence_score'))} &middot; Generated by reviewiq</p>
+</div>"""

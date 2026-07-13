@@ -1,0 +1,1 @@
+# boto3 (incl. ses) is preinstalled in the AWS Lambda Python runtime.
