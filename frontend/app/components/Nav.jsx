@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { SignedIn, UserButton } from "@clerk/clerk-react";
+import { SignedIn, SignedOut, UserButton, SignInButton } from "@clerk/clerk-react";
 
 const LINKS = [
   ["/", "Dashboard"],
@@ -12,30 +12,42 @@ const LINKS = [
 
 export default function Nav() {
   return (
-    <nav
-      style={{
-        background: "#fff",
-        borderBottom: "1px solid #eee",
-        padding: "12px 24px",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
-        <Link href="/" style={{ color: "#c0392b", fontWeight: "bold", fontSize: 18, textDecoration: "none" }}>
-          reviewiq
-        </Link>
-        {LINKS.map(([href, label]) => (
-          <Link key={href} href={href} style={{ color: "#555", fontSize: 14, textDecoration: "none" }}>
-            {label}
+    <header style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
+      <div
+        style={{
+          maxWidth: 960,
+          margin: "0 auto",
+          padding: "0 24px",
+          height: 60,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
+          <Link href="/" style={{ fontWeight: 800, fontSize: 19, letterSpacing: "-0.02em", color: "var(--brand)", textDecoration: "none" }}>
+            reviewiq
           </Link>
-        ))}
+          <SignedIn>
+            <nav style={{ display: "flex", gap: 22 }}>
+              {LINKS.map(([href, label]) => (
+                <Link key={href} href={href} style={{ fontSize: 14, fontWeight: 500, color: "var(--muted)", textDecoration: "none" }}>
+                  {label}
+                </Link>
+              ))}
+            </nav>
+          </SignedIn>
+        </div>
+
+        <SignedIn>
+          <UserButton afterSignOutUrl="/" />
+        </SignedIn>
+        <SignedOut>
+          <SignInButton mode="modal">
+            <button className="btn" style={{ padding: "8px 16px" }}>Sign in</button>
+          </SignInButton>
+        </SignedOut>
       </div>
-      <SignedIn>
-        <UserButton afterSignOutUrl="/" />
-      </SignedIn>
-    </nav>
+    </header>
   );
 }
