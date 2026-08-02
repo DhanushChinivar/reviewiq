@@ -16,15 +16,32 @@ Shopify:      EventBridge (weekly) → shopifyPull → (Judge.me) → S3 + Dynam
 Shopify auth: GET /shopify/callback → shopifyOAuth → KMS-encrypt token → DynamoDB
 ```
 
-**Analysis & delivery (weekly, automatic):**
+The worker writes rows via DynamoDB `BatchWriteItem` (25/call) so a 1000+ row file
+finishes well inside the Lambda timeout; the SQS visibility timeout (360s) is set to
+6× the worker timeout so a slow batch is never redelivered mid-flight.
+
+**Analysis & delivery — one engine (`runWeeklyAnalysis`), two triggers:**
 
 ```
-EventBridge (Mon 7am) → runWeeklyAnalysis
-    → read a week of reviews (DynamoDB)
+Weekly (automatic):
+EventBridge (Mon 7am) → runWeeklyAnalysis (all users)
+    → read reviews (DynamoDB)
     → Amazon Bedrock / Claude Sonnet 4.6  → structured JSON report
     → save report (S3 + DynamoDB)
     → invoke sendReport → HTML email via SES → seller inbox
+
+On-demand ("Generate report now" button):
+POST /reports/generate → generateTrigger → 202 "started" (returns in ~1.5s)
+    → async invoke runWeeklyAnalysis (one user)
+    → save report (S3 + DynamoDB)
+Dashboard polls GET /reports until the fresh report appears.
 ```
+
+*Why the trigger + polling:* the Bedrock analysis takes 30–60s but API Gateway hard-caps
+a request at 29s. So the trigger returns immediately and the analysis runs as a
+fire-and-forget async invoke (no 29s ceiling → it analyses **all** of a user's reviews),
+while the browser polls `getReports` for the result — the same decoupling pattern SQS
+gives the ingest path.
 
 **Dashboard:**
 
@@ -38,11 +55,11 @@ CloudFront (Next.js, Clerk auth) → GET /reports → getReports → DynamoDB + 
 
 | Type | Resources |
 |---|---|
-| **Lambda** (Python 3.13, arm64) | `reviewiq-ingest-reviews`, `reviewiq-sqs-worker`, `reviewiq-shopify-oauth`, `reviewiq-shopify-pull`, `reviewiq-run-weekly-analysis`, `reviewiq-send-report`, `reviewiq-get-reports`, `reviewiq-hello` |
+| **Lambda** (Python 3.13, arm64) | `reviewiq-ingest-reviews`, `reviewiq-sqs-worker`, `reviewiq-shopify-oauth`, `reviewiq-shopify-pull`, `reviewiq-run-weekly-analysis`, `reviewiq-generate-trigger`, `reviewiq-send-report`, `reviewiq-get-reports`, `reviewiq-hello` |
 | **DynamoDB** (on-demand) | `reviewiq-users`, `-stores`, `-shopify-tokens`, `-reviews`, `-reports` |
 | **S3** | `reviewiq-data` (private, versioned, AES256), `reviewiq-frontend-dc` (private, CloudFront-only) |
-| **SQS** | `reviewiq-ingest` + `reviewiq-ingest-dlq` (maxReceiveCount 3) |
-| **API Gateway** | `reviewiq-api` — `POST /reviews/upload`, `GET /shopify/callback`, `GET /reports`, `GET /hello` |
+| **SQS** | `reviewiq-ingest` (visibility 360s = 6× worker timeout) + `reviewiq-ingest-dlq` (maxReceiveCount 3) |
+| **API Gateway** | `reviewiq-api` — `POST /reviews/upload`, `POST /reports/generate`, `GET /reports`, `GET /shopify/callback`, `GET /hello` |
 | **Bedrock** | Claude Sonnet 4.6 via inference profile `us.anthropic.claude-sonnet-4-6` |
 | **KMS** | `alias/reviewiq-shopify-tokens` (encrypts Shopify tokens) |
 | **SES** | Sandbox; verified sender/recipient identity |
@@ -73,7 +90,8 @@ CloudFront (Next.js, Clerk auth) → GET /reports → getReports → DynamoDB + 
 | **Bedrock model** | Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-6`) | Sonnet 5 not yet available to this account; same tier + cost. Switch via `MODEL_ID` env var |
 | **Knowledge Base** | **Skipped** — inject context into the prompt | OpenSearch Serverless ~$350/mo always-on floor is the one real cost trap |
 | **Frontend hosting** | S3 (private) + CloudFront + OAC | Secure static hosting; bucket never public |
-| **Ingestion** | SQS producer→consumer with DLQ | Decouple upload from processing; resilient |
+| **Ingestion** | SQS producer→consumer with DLQ; worker uses `BatchWriteItem` | Decouple upload from processing; batch writes keep 1000+ row files inside the Lambda timeout |
+| **On-demand reports** | Trigger Lambda returns `202`, analysis runs async, dashboard polls | Bedrock analysis (30–60s) exceeds API Gateway's 29s cap — so never block the request on it |
 | **Secrets** | Shopify tokens KMS-encrypted at rest | Never store/log plaintext credentials |
 | **IAM** | Least-privilege role per Lambda | Each function gets only the actions/resources it needs |
 

@@ -21,7 +21,8 @@ to fix and what's working" report every week — zero effort from the seller.
    recommended actions), top praises, anomalies, per-product breakdown.
 3. **Deliver** the report as an HTML email (SES) and in an authenticated Next.js dashboard.
 
-Everything runs on a weekly schedule with no manual intervention.
+Reports run automatically every week — or **on demand**, via a "Generate report now" button
+that analyzes everything uploaded so far without waiting for the weekly cron.
 
 ---
 
@@ -32,23 +33,27 @@ flowchart TB
     subgraph Client["Frontend — Next.js on S3 + CloudFront (Clerk auth)"]
         UI["Dashboard · Reports · Connect · Settings"]
     end
-    UI -->|HTTPS| APIGW["API Gateway\nPOST /reviews/upload · GET /shopify/callback · GET /reports"]
+    UI -->|HTTPS| APIGW["API Gateway\nPOST /reviews/upload · POST /reports/generate · GET /reports · GET /shopify/callback"]
 
     APIGW --> ING["ingestReviews\n(producer)"]
+    APIGW --> GEN["generateTrigger\n202 'started'"]
     APIGW --> OAUTH["shopifyOAuth\n(KMS-encrypt token)"]
     APIGW --> GET["getReports"]
 
     ING -->|job| SQS["SQS reviewiq-ingest\n(+ DLQ)"]
-    SQS --> WORK["sqs_worker\nparse CSV → store"]
+    SQS --> WORK["sqs_worker\nbatch-write → store"]
     WORK --> S3[("S3 reviewiq-data")]
     WORK --> DDB[("DynamoDB\n5 tables")]
+
+    GEN -->|async invoke| ANALYZE
+    UI -.->|poll| GET
 
     subgraph Sched["EventBridge (weekly cron)"]
         E1["Sun 11pm → shopifyPull"]
         E2["Mon 7am → runWeeklyAnalysis"]
     end
     E1 --> PULL["shopifyPull\n(Judge.me → store)"] --> DDB
-    E2 --> ANALYZE["runWeeklyAnalysis"]
+    E2 --> ANALYZE["runWeeklyAnalysis\n(weekly: all users · on-demand: one user)"]
 
     ANALYZE -->|reviews| DDB
     ANALYZE -->|prompt| BEDROCK["Amazon Bedrock\nClaude Sonnet 4.6"]
@@ -67,8 +72,8 @@ flowchart TB
 
 | Service | Role |
 |---|---|
-| **Lambda** | 8 functions — all compute (producer/worker, Shopify OAuth+pull, analysis, email, reports API) |
-| **API Gateway** | REST API — upload, Shopify callback, reports |
+| **Lambda** | 9 functions — all compute (producer/worker, Shopify OAuth+pull, analysis, on-demand trigger, email, reports API) |
+| **API Gateway** | REST API — upload, on-demand report, reports, Shopify callback |
 | **DynamoDB** | 5 on-demand tables — users, stores, reviews, reports, shopify-tokens |
 | **S3** | Private data bucket (reviews/reports) + frontend hosting bucket |
 | **SQS** | Async ingestion queue + dead-letter queue |
@@ -98,12 +103,13 @@ reviewiq/
 │   ├── shopify_oauth/        # GET /shopify/callback → KMS-encrypt token
 │   ├── shopify_pull/         # EventBridge → pull reviews → store
 │   ├── run_weekly_analysis/  # reviews → Bedrock/Claude → report (+ emails)
+│   ├── generate_trigger/     # POST /reports/generate → 202 → async analysis
 │   ├── send_report/          # report → SES HTML email
 │   ├── get_reports/          # GET /reports → dashboard data
 │   └── hello/                # health-check
 │       Each lambda has: lambda_function.py, iam-policy.json, README.md
 ├── frontend/                 # Next.js dashboard (S3 + CloudFront)
-├── sample-data/reviews.csv   # demo CSV
+├── sample-data/              # generate_reviews.py + IKEA test datasets (1000 / 300 rows)
 └── docs/                     # architecture + project plan
 ```
 
@@ -119,8 +125,12 @@ Each Lambda folder documents its own deploy config, IAM policy, and how it was b
   the one real cost trap. Product context is injected into the prompt instead. Everything else
   is on-demand/pay-per-use (~$1–5/mo at demo scale).
 - **Least-privilege IAM** — each Lambda gets exactly the actions it needs (e.g. the worker can
-  `sqs:ReceiveMessage`/`DeleteMessage` + `s3:PutObject` + `dynamodb:PutItem`, nothing more).
-- **Decoupled ingestion** — SQS between upload and processing, with a dead-letter queue.
+  `sqs:ReceiveMessage`/`DeleteMessage` + `s3:GetObject` + `dynamodb:BatchWriteItem`, nothing more).
+- **Decoupled ingestion** — SQS between upload and processing, with a dead-letter queue; the
+  worker batch-writes to DynamoDB so 1000+ row files finish inside the Lambda timeout.
+- **Async on-demand analysis** — the "Generate report now" button returns instantly (a trigger
+  Lambda fires the analysis as a fire-and-forget async invoke) so the 30–60s Bedrock call never
+  hits API Gateway's 29s cap; the dashboard polls for the result.
 - **Secrets** — Shopify tokens are KMS-encrypted at rest, never logged.
 
 ## Known MVP limitations (see `docs/` for the roadmap)
@@ -130,7 +140,9 @@ Each Lambda folder documents its own deploy config, IAM policy, and how it was b
 - **SES sandbox** — emails only send to verified addresses until production access is granted.
 - **Shopify/Judge.me** — the OAuth token exchange and review pull are simulated (no registered
   Shopify app yet); the AWS mechanics (KMS, EventBridge, storage) are real.
-- **CSV upload** — the pipeline works via the API; live browser upload needs presigned S3 URLs.
+- **Upload payload size** — the browser posts CSV text through the API (JSON body), which works
+  well into the thousands of rows but is bounded by API Gateway's 10 MB request limit; very large
+  files would want a presigned direct-to-S3 upload.
 
 ---
 
