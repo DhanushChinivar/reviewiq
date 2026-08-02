@@ -38,23 +38,28 @@ def handler(event, context):
         obj = s3.get_object(Bucket=DATA_BUCKET, Key=s3_key)
         content = obj["Body"].read().decode("utf-8")
 
-        # 2. Parse each row into a review record
-        for row in csv.DictReader(io.StringIO(content)):
-            reviews_table.put_item(
-                Item={
-                    "user_id": user_id,
-                    "review_id": str(uuid.uuid4()),
-                    "product_id": row.get("product_id"),
-                    "product_name": row.get("product_name"),
-                    "rating": int(row["rating"]) if row.get("rating") else None,
-                    "review_text": row.get("review_text"),
-                    "date": row.get("date"),
-                    "platform": row.get("platform"),
-                    "source": "csv",
-                    "job_id": job_id,
-                }
-            )
-            ingested += 1
+        # 2. Parse each row into a review record.
+        #    batch_writer() buffers and sends via BatchWriteItem (25 rows/call),
+        #    so a 1000-row file is ~40 calls instead of 1000 — fast enough to
+        #    finish well inside the Lambda timeout, and it auto-retries any
+        #    unprocessed items.
+        with reviews_table.batch_writer() as batch:
+            for row in csv.DictReader(io.StringIO(content)):
+                batch.put_item(
+                    Item={
+                        "user_id": user_id,
+                        "review_id": str(uuid.uuid4()),
+                        "product_id": row.get("product_id"),
+                        "product_name": row.get("product_name"),
+                        "rating": int(row["rating"]) if row.get("rating") else None,
+                        "review_text": row.get("review_text"),
+                        "date": row.get("date"),
+                        "platform": row.get("platform"),
+                        "source": "csv",
+                        "job_id": job_id,
+                    }
+                )
+                ingested += 1
 
         logger.info(json.dumps({"event": "csv_ingested", "job_id": job_id, "reviews": ingested}))
 
