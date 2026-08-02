@@ -8,6 +8,7 @@ export default function Connect() {
   const { user } = useUser();
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState(null); // {kind: 'ok'|'err'|'busy', msg}
+  const [gen, setGen] = useState(null); // report-generation status: {kind, msg, done?}
 
   async function fileToCsv(f) {
     // .csv → read as text; .xlsx → parse first sheet to CSV in the browser
@@ -43,6 +44,31 @@ export default function Connect() {
       setFile(null);
     } catch (e) {
       setStatus({ kind: "err", msg: e.message || "Something went wrong." });
+    }
+  }
+
+  async function handleGenerate() {
+    if (!user) return;
+    setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this can take up to a minute." });
+    try {
+      const res = await fetch(`${API_BASE}/reports/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: user.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        setGen({ kind: "err", msg: "No reviews found yet. Upload a file first, then generate." });
+        return;
+      }
+      if (!res.ok) throw new Error(`Generation failed (${res.status})`);
+      setGen({
+        kind: "ok",
+        done: true,
+        msg: `Report ready — sentiment ${data.sentiment_score}/100 for ${data.report_date}.`,
+      });
+    } catch (e) {
+      setGen({ kind: "err", msg: e.message || "Something went wrong." });
     }
   }
 
@@ -103,6 +129,47 @@ export default function Connect() {
         <p className="muted" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
           Expected columns: <code>product_id, product_name, rating, review_text, date, platform</code>.
           Flow: browser → API → S3 → SQS → worker → DynamoDB.
+        </p>
+      </div>
+
+      <div className="card panel" style={{ marginTop: 14 }}>
+        <h2 style={{ marginTop: 0 }}>⚡ Generate report now</h2>
+        <p className="muted" style={{ marginTop: 4 }}>
+          Don&apos;t want to wait for the weekly run? Analyze everything you&apos;ve uploaded right now and
+          get a fresh dashboard report.
+        </p>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <button
+            className="btn"
+            onClick={handleGenerate}
+            disabled={!user || gen?.kind === "busy"}
+            style={{ opacity: !user || gen?.kind === "busy" ? 0.5 : 1 }}
+          >
+            {gen?.kind === "busy" ? "Analyzing…" : "Generate report now"}
+          </button>
+          {gen?.done && (
+            <a href="/" className="btn-ghost2">View dashboard →</a>
+          )}
+        </div>
+
+        {gen && (
+          <p
+            style={{
+              marginTop: 10,
+              marginBottom: 0,
+              fontSize: 14,
+              fontWeight: 600,
+              color: gen.kind === "ok" ? "var(--good)" : gen.kind === "err" ? "var(--bad)" : "var(--muted)",
+            }}
+          >
+            {gen.kind === "ok" ? "✓ " : gen.kind === "err" ? "⚠ " : ""}
+            {gen.msg}
+          </p>
+        )}
+
+        <p className="muted" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
+          Runs Amazon Bedrock (Claude) on your reviews → sentiment, themes, and prioritized actions.
         </p>
       </div>
     </main>

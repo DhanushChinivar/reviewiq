@@ -20,6 +20,7 @@ export default function Dashboard() {
   const { user, isLoaded } = useUser();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [gen, setGen] = useState(null); // {kind:'busy'|'err', msg}
 
   useEffect(() => {
     if (!isLoaded || !user) return;
@@ -28,6 +29,29 @@ export default function Dashboard() {
       .then(setData)
       .catch((e) => setError(String(e)));
   }, [isLoaded, user]);
+
+  async function handleGenerate() {
+    if (!user) return;
+    setGen({ kind: "busy", msg: "Analyzing your reviews with AI… up to a minute." });
+    try {
+      const res = await fetch(`${API_BASE}/reports/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: user.id }),
+      });
+      if (res.status === 404) {
+        setGen({ kind: "err", msg: "No reviews yet — upload some from the Connect page first." });
+        return;
+      }
+      if (!res.ok) throw new Error(`Generation failed (${res.status})`);
+      // Refetch so the new report renders in place.
+      const fresh = await fetch(`${API_BASE}/reports?user_id=${encodeURIComponent(user.id)}`).then((r) => r.json());
+      setData(fresh);
+      setGen(null);
+    } catch (e) {
+      setGen({ kind: "err", msg: e.message || "Something went wrong." });
+    }
+  }
 
   if (error)
     return <Wrap><div className="card empty"><p className="muted">Error: {error}</p></div></Wrap>;
@@ -42,9 +66,20 @@ export default function Dashboard() {
         <div className="card empty">
           <div style={{ fontSize: 40, marginBottom: 10 }}>📊</div>
           <p style={{ fontWeight: 800, fontSize: 18, margin: 0 }}>No reports yet</p>
-          <p className="muted" style={{ marginTop: 6, maxWidth: 360, marginInline: "auto" }}>
-            Upload reviews from the <b>Connect</b> page. Your weekly AI report will appear here.
+          <p className="muted" style={{ marginTop: 6, maxWidth: 380, marginInline: "auto" }}>
+            Upload reviews from the <b>Connect</b> page, then generate a report now — or wait for the
+            weekly run.
           </p>
+          <div style={{ marginTop: 16 }}>
+            <button className="btn" onClick={handleGenerate} disabled={!user || gen?.kind === "busy"} style={{ opacity: !user || gen?.kind === "busy" ? 0.5 : 1 }}>
+              {gen?.kind === "busy" ? "Analyzing…" : "Generate report now"}
+            </button>
+          </div>
+          {gen && (
+            <p style={{ marginTop: 12, marginBottom: 0, fontSize: 14, fontWeight: 600, color: gen.kind === "err" ? "var(--bad)" : "var(--muted)" }}>
+              {gen.kind === "err" ? "⚠ " : ""}{gen.msg}
+            </p>
+          )}
         </div>
       </Wrap>
     );

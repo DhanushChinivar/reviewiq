@@ -32,3 +32,7 @@ yarn-error.log*
 .DS_Store
 .vscode/
 .idea/
+
+# AWS credential downloads — never commit
+*_accessKeys.csv
+*_credentials.csv
