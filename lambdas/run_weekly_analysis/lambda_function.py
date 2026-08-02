@@ -46,6 +46,13 @@ CORS_HEADERS = {
     "Access-Control-Allow-Methods": "POST,OPTIONS",
 }
 
+# On-demand (API) calls must return before API Gateway's hard 29s limit, so we
+# cap how many reviews go to Bedrock in that mode (most recent first). The
+# scheduled job has no such cap. Output is bounded too (top products / themes)
+# so the JSON never truncates against maxTokens.
+ON_DEMAND_MAX_REVIEWS = 350
+MAX_OUTPUT_TOKENS = 4000
+
 INSTRUCTIONS = (
     "You are a product-review analyst. Analyze the reviews and return ONLY a JSON "
     "object (no prose, no markdown fences) with this exact shape:\n"
@@ -55,22 +62,39 @@ INSTRUCTIONS = (
     '"top_praises": [{"theme": "str", "mentions": <int>}], '
     '"anomalies": ["str"], '
     '"products": [{"product_name": "str", "sentiment_score": <int>, "review_count": <int>}], '
-    '"confidence_score": <float 0-1>}'
+    '"confidence_score": <float 0-1>}\n'
+    "Keep the response compact so it fits the token budget: at most 8 themes, at most "
+    "5 top_praises, at most 3 anomalies, and in \"products\" include ONLY the 15 "
+    "products with the most reviews (skip the rest)."
 )
 
 
 def handler(event, context):
     is_http = "httpMethod" in event or bool(event.get("requestContext"))
 
-    # --- On-demand (API Gateway) mode ----------------------------------------
+    # CORS preflight — answer before doing anything else.
+    if is_http and (event.get("httpMethod") or "").upper() == "OPTIONS":
+        return _http_resp(200, {"ok": True})
+
+    # Wrap the work so ANY failure in HTTP mode still returns a CORS response.
+    # Without this, an unhandled exception yields a bare API Gateway 5xx with no
+    # Access-Control-Allow-Origin header — which the browser reports only as the
+    # opaque "Failed to fetch".
+    try:
+        return _run(event, is_http)
+    except Exception as e:  # noqa: BLE001 — surface a clean error to the client
+        logger.exception("analysis_failed")
+        if is_http:
+            return _http_resp(500, {"error": "analysis_failed", "detail": str(e)[:300]})
+        raise
+
+
+def _run(event, is_http):
     if is_http:
-        if (event.get("httpMethod") or "").upper() == "OPTIONS":  # CORS preflight
-            return _http_resp(200, {"ok": True})
         body = json.loads(event.get("body") or "{}")
         target_user = body.get("user_id")
         if not target_user:
             return _http_resp(400, {"error": "user_id is required"})
-    # --- Scheduled (EventBridge) mode ----------------------------------------
     else:
         # A direct/manual async invoke may still target one user.
         target_user = event.get("user_id")
@@ -95,7 +119,13 @@ def handler(event, context):
     last_report = None
     reports_created = 0
     for user_id, reviews in by_user.items():
-        last_report = _generate_for_user(user_id, reviews)
+        total = len(reviews)
+        sample = reviews
+        # On-demand: cap the input so the whole call finishes inside API Gateway's
+        # 29s window. Take the most recent reviews (dates are ISO strings).
+        if is_http and total > ON_DEMAND_MAX_REVIEWS:
+            sample = sorted(reviews, key=lambda r: r.get("date") or "", reverse=True)[:ON_DEMAND_MAX_REVIEWS]
+        last_report = _generate_for_user(user_id, sample, total=total)
         reports_created += 1
 
     if is_http:
@@ -103,12 +133,19 @@ def handler(event, context):
             "reports_created": reports_created,
             "report_date": last_report["report_date"],
             "sentiment_score": last_report["sentiment_score"],
+            "analyzed": last_report["analyzed"],
+            "total_reviews": last_report["total"],
         })
     return {"reports_created": reports_created}
 
 
-def _generate_for_user(user_id, reviews):
-    """Run Bedrock on one user's reviews; persist report to S3 + DynamoDB; email it."""
+def _generate_for_user(user_id, reviews, total=None):
+    """Run Bedrock on one user's reviews; persist report to S3 + DynamoDB; email it.
+
+    `reviews` is the (possibly capped) sample actually sent to Bedrock; `total`
+    is the full count the user has, for honest reporting in the UI.
+    """
+    total = total if total is not None else len(reviews)
     payload = [
         {
             "product": r.get("product_name"),
@@ -124,7 +161,7 @@ def _generate_for_user(user_id, reviews):
     resp = bedrock.converse(
         modelId=MODEL_ID,
         messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 2000},
+        inferenceConfig={"maxTokens": MAX_OUTPUT_TOKENS},
     )
     text = "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
     report = _extract_json(text)
@@ -153,8 +190,8 @@ def _generate_for_user(user_id, reviews):
             InvocationType="Event",
             Payload=json.dumps({"user_id": user_id}).encode(),
         )
-    logger.info(json.dumps({"event": "report_created", "user_id": user_id, "reviews": len(reviews)}))
-    return {"report_date": today, "sentiment_score": sentiment}
+    logger.info(json.dumps({"event": "report_created", "user_id": user_id, "analyzed": len(reviews), "total": total}))
+    return {"report_date": today, "sentiment_score": sentiment, "analyzed": len(reviews), "total": total}
 
 
 def _http_resp(status, body):

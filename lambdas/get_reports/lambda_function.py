@@ -41,6 +41,7 @@ def handler(event, context):
             "sentiment_score": _int(r.get("sentiment_score")),
             "summary": r.get("summary"),
             "review_count": _int(r.get("review_count")),
+            "created_at": r.get("created_at"),  # lets the frontend detect a freshly-generated report
         }
         for r in rows
     ]

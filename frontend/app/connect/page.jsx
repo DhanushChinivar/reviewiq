@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useUser } from "@clerk/clerk-react";
 import { API_BASE } from "../lib/config";
+import { generateAndWait } from "../lib/reports";
 
 export default function Connect() {
   const { user } = useUser();
@@ -49,26 +50,19 @@ export default function Connect() {
 
   async function handleGenerate() {
     if (!user) return;
-    setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this can take up to a minute." });
+    setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this runs in the background and can take up to a minute." });
     try {
-      const res = await fetch(`${API_BASE}/reports/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: user.id }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 404) {
-        setGen({ kind: "err", msg: "No reviews found yet. Upload a file first, then generate." });
-        return;
-      }
-      if (!res.ok) throw new Error(`Generation failed (${res.status})`);
+      const fresh = await generateAndWait(user.id);
+      const row = fresh?.history?.[0] || {};
       setGen({
         kind: "ok",
         done: true,
-        msg: `Report ready — sentiment ${data.sentiment_score}/100 for ${data.report_date}.`,
+        msg: `Report ready — sentiment ${row.sentiment_score}/100 for ${row.report_date}.`,
       });
     } catch (e) {
-      setGen({ kind: "err", msg: e.message || "Something went wrong." });
+      if (e.code === 404) setGen({ kind: "err", msg: "No reviews found yet. Upload a file first, then generate." });
+      else if (e.message === "timeout") setGen({ kind: "err", msg: "Still analyzing — give it a moment, then check the dashboard." });
+      else setGen({ kind: "err", msg: e.message || "Something went wrong." });
     }
   }
 

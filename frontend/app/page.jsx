@@ -6,6 +6,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList, CartesianGrid,
 } from "recharts";
 import { API_BASE } from "./lib/config";
+import { generateAndWait } from "./lib/reports";
 
 const PRIORITY = { red: "🔴", yellow: "🟡", green: "🟢" };
 
@@ -32,24 +33,15 @@ export default function Dashboard() {
 
   async function handleGenerate() {
     if (!user) return;
-    setGen({ kind: "busy", msg: "Analyzing your reviews with AI… up to a minute." });
+    setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this runs in the background, up to a minute." });
     try {
-      const res = await fetch(`${API_BASE}/reports/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: user.id }),
-      });
-      if (res.status === 404) {
-        setGen({ kind: "err", msg: "No reviews yet — upload some from the Connect page first." });
-        return;
-      }
-      if (!res.ok) throw new Error(`Generation failed (${res.status})`);
-      // Refetch so the new report renders in place.
-      const fresh = await fetch(`${API_BASE}/reports?user_id=${encodeURIComponent(user.id)}`).then((r) => r.json());
+      const fresh = await generateAndWait(user.id);
       setData(fresh);
       setGen(null);
     } catch (e) {
-      setGen({ kind: "err", msg: e.message || "Something went wrong." });
+      if (e.code === 404) setGen({ kind: "err", msg: "No reviews yet — upload some from the Connect page first." });
+      else if (e.message === "timeout") setGen({ kind: "err", msg: "Still analyzing — give it a moment, then refresh." });
+      else setGen({ kind: "err", msg: e.message || "Something went wrong." });
     }
   }
 
