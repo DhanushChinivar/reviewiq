@@ -7,6 +7,7 @@ import {
 } from "recharts";
 import { API_BASE } from "./lib/config";
 import { generateAndWait } from "./lib/reports";
+import { fmtDate } from "./lib/format";
 
 const PRIORITY = { red: "🔴", yellow: "🟡", green: "🟢" };
 
@@ -22,20 +23,34 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [gen, setGen] = useState(null); // {kind:'busy'|'err', msg}
+  // Which report to show — read from ?report= in the URL (a history row was clicked).
+  const [selected, setSelected] = useState(() =>
+    typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("report") : null
+  );
 
   useEffect(() => {
     if (!isLoaded || !user) return;
-    fetch(`${API_BASE}/reports?user_id=${encodeURIComponent(user.id)}`)
+    const url = `${API_BASE}/reports?user_id=${encodeURIComponent(user.id)}` +
+      (selected ? `&report=${encodeURIComponent(selected)}` : "");
+    fetch(url)
       .then((r) => r.json())
       .then(setData)
       .catch((e) => setError(String(e)));
-  }, [isLoaded, user]);
+  }, [isLoaded, user, selected]);
+
+  function viewLatest() {
+    // Drop the ?report= pin and go back to the newest report.
+    if (typeof window !== "undefined") window.history.replaceState(null, "", "/");
+    setSelected(null);
+  }
 
   async function handleGenerate() {
     if (!user) return;
     setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this runs in the background, up to a minute." });
     try {
       const fresh = await generateAndWait(user.id);
+      if (typeof window !== "undefined") window.history.replaceState(null, "", "/");
+      setSelected(null);
       setData(fresh);
       setGen(null);
     } catch (e) {
@@ -76,11 +91,30 @@ export default function Dashboard() {
       </Wrap>
     );
 
-  const reviewCount = data.history?.[0]?.review_count ?? "—";
-  const reportDate = data.history?.[0]?.report_date ?? "";
+  const shownDate = data?.selected;
+  const shownRow = (data.history || []).find((h) => h.report_date === shownDate) || data.history?.[0] || {};
+  const reviewCount = shownRow.review_count ?? "—";
+  const isLatest = !data.history?.length || data.history[0].report_date === shownDate;
+
+  const sub = (
+    <>
+      {isLatest ? "Latest report" : "Report"} · {fmtDate(shownDate)}
+      {!isLatest && (
+        <>
+          {" · "}
+          <button
+            onClick={viewLatest}
+            style={{ background: "none", border: "none", padding: 0, color: "var(--brand)", fontWeight: 600, cursor: "pointer", font: "inherit" }}
+          >
+            View latest →
+          </button>
+        </>
+      )}
+    </>
+  );
 
   return (
-    <Wrap sub={`Latest report · ${reportDate}`}>
+    <Wrap sub={sub}>
       <div className="kpis">
         <div className="card kpi">
           <div className="label">Sentiment</div>

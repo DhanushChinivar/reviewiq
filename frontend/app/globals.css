@@ -110,3 +110,5 @@ input.control, select.control { width: 100%; padding: 10px 12px; border: 1px sol
 .stats-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 24px 18px; }
 .stat-num { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; background: linear-gradient(90deg, #4f46e5, #9333ea); -webkit-background-clip: text; background-clip: text; color: transparent; }
 @media (max-width: 640px) { .stats-strip { grid-template-columns: 1fr 1fr; gap: 18px; } }
+
+tr.rowlink:hover td { background: #f7f8fa; }

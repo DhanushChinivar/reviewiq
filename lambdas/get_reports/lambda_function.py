@@ -28,6 +28,7 @@ DATA_BUCKET = os.environ["DATA_BUCKET"]
 def handler(event, context):
     params = event.get("queryStringParameters") or {}
     user_id = params.get("user_id", "u123")
+    report_key = params.get("report")  # optional: a specific report_date to view
 
     resp = reports_table.query(
         KeyConditionExpression=Key("user_id").eq(user_id),
@@ -46,12 +47,24 @@ def handler(event, context):
         for r in rows
     ]
 
+    # Pick which report to return the full body for: the requested one, else newest.
+    row = None
+    if report_key:
+        row = next((r for r in rows if r.get("report_date") == report_key), None)
+    if row is None and rows:
+        row = rows[0]
+
     latest = None
-    if rows:
-        obj = s3.get_object(Bucket=DATA_BUCKET, Key=rows[0]["s3_key"])
+    if row:
+        obj = s3.get_object(Bucket=DATA_BUCKET, Key=row["s3_key"])
         latest = json.loads(obj["Body"].read())
 
-    return _resp(200, {"user_id": user_id, "latest": latest, "history": history})
+    return _resp(200, {
+        "user_id": user_id,
+        "latest": latest,
+        "history": history,
+        "selected": row.get("report_date") if row else None,
+    })
 
 
 def _int(v):

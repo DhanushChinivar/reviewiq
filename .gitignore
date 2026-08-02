@@ -36,3 +36,6 @@ yarn-error.log*
 # AWS credential downloads — never commit
 *_accessKeys.csv
 *_credentials.csv
+
+# Claude Code local settings
+.claude/

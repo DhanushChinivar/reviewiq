@@ -166,8 +166,13 @@ def _generate_for_user(user_id, reviews, total=None):
     text = "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
     report = _extract_json(text)
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    s3_key = f"reports/{user_id}/{today}/report.json"
+    # The sort key is a full timestamp (not just a date), so every generation is
+    # its own row in history instead of overwriting the day's report. The S3 key
+    # is unique per generation too, so each history row points at its own report.
+    now = datetime.now(timezone.utc)
+    report_ts = now.isoformat()
+    key_ts = now.strftime("%Y%m%dT%H%M%S%fZ")
+    s3_key = f"reports/{user_id}/{key_ts}.json"
     s3.put_object(Bucket=DATA_BUCKET, Key=s3_key, Body=json.dumps(report).encode())
 
     ss = report.get("sentiment_score")
@@ -175,12 +180,12 @@ def _generate_for_user(user_id, reviews, total=None):
     reports_table.put_item(
         Item={
             "user_id": user_id,
-            "report_date": today,
+            "report_date": report_ts,
             "s3_key": s3_key,
             "sentiment_score": sentiment,
             "summary": report.get("week_summary"),
             "review_count": len(reviews),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": report_ts,
         }
     )
     # Chain to sendReport so the report is emailed (fire-and-forget async invoke).
@@ -191,7 +196,7 @@ def _generate_for_user(user_id, reviews, total=None):
             Payload=json.dumps({"user_id": user_id}).encode(),
         )
     logger.info(json.dumps({"event": "report_created", "user_id": user_id, "analyzed": len(reviews), "total": total}))
-    return {"report_date": today, "sentiment_score": sentiment, "analyzed": len(reviews), "total": total}
+    return {"report_date": report_ts, "sentiment_score": sentiment, "analyzed": len(reviews), "total": total}
 
 
 def _http_resp(status, body):

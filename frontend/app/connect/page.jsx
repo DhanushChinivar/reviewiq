@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useUser } from "@clerk/clerk-react";
 import { API_BASE } from "../lib/config";
 import { generateAndWait } from "../lib/reports";
+import { fmtDate } from "../lib/format";
 
 export default function Connect() {
   const { user } = useUser();
@@ -57,7 +58,7 @@ export default function Connect() {
       setGen({
         kind: "ok",
         done: true,
-        msg: `Report ready — sentiment ${row.sentiment_score}/100 for ${row.report_date}.`,
+        msg: `Report ready — sentiment ${row.sentiment_score}/100 (${fmtDate(row.report_date)}).`,
       });
     } catch (e) {
       if (e.code === 404) setGen({ kind: "err", msg: "No reviews found yet. Upload a file first, then generate." });
