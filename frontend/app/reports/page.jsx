@@ -2,22 +2,28 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useUser } from "@clerk/clerk-react";
+import { useUser, useAuth } from "@clerk/clerk-react";
 import { API_BASE } from "../lib/config";
 import { fmtDate } from "../lib/format";
 
 export default function Reports() {
   const { user, isLoaded } = useUser();
+  const { getToken } = useAuth();
   const router = useRouter();
   const [data, setData] = useState(null);
 
   useEffect(() => {
     if (!isLoaded || !user) return;
-    fetch(`${API_BASE}/reports?user_id=${encodeURIComponent(user.id)}`)
-      .then((r) => r.json())
-      .then(setData)
-      .catch(() => setData({ history: [] }));
-  }, [isLoaded, user]);
+    (async () => {
+      try {
+        const token = await getToken();
+        const r = await fetch(`${API_BASE}/reports`, { headers: { Authorization: `Bearer ${token}` } });
+        setData(await r.json());
+      } catch {
+        setData({ history: [] });
+      }
+    })();
+  }, [isLoaded, user, getToken]);
 
   const history = data?.history || [];
 

@@ -1,0 +1,4 @@
+pyjwt[crypto]
+# Build for Lambda arm64:
+#   pip install --target build "pyjwt[crypto]" \
+#     --platform manylinux2014_aarch64 --implementation cp --python-version 3.13 --only-binary=:all:

@@ -45,13 +45,18 @@ def handler(event, context):
     if (event.get("httpMethod") or "").upper() == "OPTIONS":
         return _resp(200, {"ok": True})
 
+    # Identity comes from the verified Clerk JWT (the authorizer), NEVER the body.
+    authz = (event.get("requestContext") or {}).get("authorizer") or {}
+    user_id = authz.get("user_id")
+    if not user_id:
+        return _resp(401, {"error": "unauthorized"})
+
     body = json.loads(event.get("body") or "{}")
-    user_id = body.get("user_id")
     csv_text = body.get("csv")
     filename = body.get("filename") or "upload.csv"
 
-    if not user_id or not csv_text:
-        return _resp(400, {"error": "user_id and csv are required"})
+    if not csv_text:
+        return _resp(400, {"error": "csv is required"})
 
     job_id = str(uuid.uuid4())
     s3_key = f"uploads/{user_id}/{job_id}.csv"

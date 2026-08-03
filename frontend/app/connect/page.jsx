@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useUser } from "@clerk/clerk-react";
+import { useUser, useAuth } from "@clerk/clerk-react";
 import { API_BASE } from "../lib/config";
 import { generateAndWait } from "../lib/reports";
 import { fmtDate } from "../lib/format";
 
 export default function Connect() {
   const { user } = useUser();
+  const { getToken } = useAuth();
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState(null); // {kind: 'ok'|'err'|'busy', msg}
   const [gen, setGen] = useState(null); // report-generation status: {kind, msg, done?}
@@ -32,10 +33,11 @@ export default function Connect() {
       if (!csv.trim()) throw new Error("The file looks empty.");
 
       setStatus({ kind: "busy", msg: "Uploading…" });
+      const token = await getToken();
       const res = await fetch(`${API_BASE}/reviews/upload`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: user.id, filename: file.name, csv }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ filename: file.name, csv }), // user_id from the token
       });
       if (!res.ok) throw new Error(`Upload failed (${res.status})`);
       const data = await res.json();
@@ -53,7 +55,7 @@ export default function Connect() {
     if (!user) return;
     setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this runs in the background and can take up to a minute." });
     try {
-      const fresh = await generateAndWait(user.id);
+      const fresh = await generateAndWait(getToken);
       const row = fresh?.history?.[0] || {};
       setGen({
         kind: "ok",

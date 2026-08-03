@@ -27,8 +27,13 @@ DATA_BUCKET = os.environ["DATA_BUCKET"]
 
 
 def handler(event, context):
+    # Identity comes from the verified Clerk JWT (the authorizer), NEVER the URL.
+    authz = (event.get("requestContext") or {}).get("authorizer") or {}
+    user_id = authz.get("user_id")
+    if not user_id:
+        return _resp(401, {"error": "unauthorized"})
+
     params = event.get("queryStringParameters") or {}
-    user_id = params.get("user_id", "u123")
     report_key = params.get("report")  # optional: a specific report_date to view
     job_id = params.get("job")          # optional: poll a generation job's status
 
@@ -66,7 +71,7 @@ def handler(event, context):
     job = None
     if job_id:
         j = jobs_table.get_item(Key={"job_id": job_id}).get("Item")
-        if j:
+        if j and j.get("user_id") == user_id:  # only your own jobs
             job = {"status": j.get("status"), "error": j.get("error")}
 
     return _resp(200, {

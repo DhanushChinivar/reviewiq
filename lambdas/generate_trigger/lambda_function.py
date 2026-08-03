@@ -43,10 +43,11 @@ def handler(event, context):
     if (event.get("httpMethod") or "").upper() == "OPTIONS":  # CORS preflight
         return _resp(200, {"ok": True})
 
-    body = json.loads(event.get("body") or "{}")
-    user_id = body.get("user_id")
+    # Identity comes from the verified Clerk JWT (the authorizer), NEVER the body.
+    authz = (event.get("requestContext") or {}).get("authorizer") or {}
+    user_id = authz.get("user_id")
     if not user_id:
-        return _resp(400, {"error": "user_id is required"})
+        return _resp(401, {"error": "unauthorized"})
 
     # Record the job as RUNNING before we kick off the work, so the frontend can
     # poll its status. Auto-expires after 24h via TTL.

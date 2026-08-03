@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useUser } from "@clerk/clerk-react";
+import { useUser, useAuth } from "@clerk/clerk-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList, CartesianGrid,
 } from "recharts";
@@ -20,6 +20,7 @@ function band(score) {
 
 export default function Dashboard() {
   const { user, isLoaded } = useUser();
+  const { getToken } = useAuth();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [gen, setGen] = useState(null); // {kind:'busy'|'err', msg}
@@ -30,13 +31,17 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!isLoaded || !user) return;
-    const url = `${API_BASE}/reports?user_id=${encodeURIComponent(user.id)}` +
-      (selected ? `&report=${encodeURIComponent(selected)}` : "");
-    fetch(url)
-      .then((r) => r.json())
-      .then(setData)
-      .catch((e) => setError(String(e)));
-  }, [isLoaded, user, selected]);
+    (async () => {
+      try {
+        const token = await getToken();
+        const url = `${API_BASE}/reports` + (selected ? `?report=${encodeURIComponent(selected)}` : "");
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        setData(await r.json());
+      } catch (e) {
+        setError(String(e));
+      }
+    })();
+  }, [isLoaded, user, selected, getToken]);
 
   function viewLatest() {
     // Drop the ?report= pin and go back to the newest report.
@@ -48,7 +53,7 @@ export default function Dashboard() {
     if (!user) return;
     setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this runs in the background, up to a minute." });
     try {
-      const fresh = await generateAndWait(user.id);
+      const fresh = await generateAndWait(getToken);
       if (typeof window !== "undefined") window.history.replaceState(null, "", "/");
       setSelected(null);
       setData(fresh);
