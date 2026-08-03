@@ -25,8 +25,20 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 sqs = boto3.client("sqs")
 s3 = boto3.client("s3")
+dynamodb = boto3.resource("dynamodb")
+users_table = dynamodb.Table(os.environ["USERS_TABLE"])
 QUEUE_URL = os.environ["INGEST_QUEUE_URL"]
 DATA_BUCKET = os.environ["DATA_BUCKET"]
+
+
+def _capture_email(user_id, email):
+    """Remember the user's email so their weekly report reaches them, not the default."""
+    if not email:
+        return
+    try:
+        users_table.put_item(Item={"user_id": user_id, "email": email})
+    except Exception:  # noqa: BLE001 — best-effort, never block the upload
+        logger.exception("user_email_capture_failed")
 
 CORS_HEADERS = {
     "Content-Type": "application/json",
@@ -54,6 +66,7 @@ def handler(event, context):
     body = json.loads(event.get("body") or "{}")
     csv_text = body.get("csv")
     filename = body.get("filename") or "upload.csv"
+    _capture_email(user_id, body.get("email"))
 
     if not csv_text:
         return _resp(400, {"error": "csv is required"})

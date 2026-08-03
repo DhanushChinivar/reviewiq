@@ -26,6 +26,17 @@ lambda_client = boto3.client("lambda")
 dynamodb = boto3.resource("dynamodb")
 ANALYSIS_FUNCTION = os.environ["ANALYSIS_FUNCTION"]
 jobs_table = dynamodb.Table(os.environ["JOBS_TABLE"])
+users_table = dynamodb.Table(os.environ["USERS_TABLE"])
+
+
+def _capture_email(user_id, email):
+    """Remember the user's email so weekly/on-demand reports reach them, not the default."""
+    if not email:
+        return
+    try:
+        users_table.put_item(Item={"user_id": user_id, "email": email})
+    except Exception:  # noqa: BLE001 — email capture is best-effort, never block the request
+        logger.exception("user_email_capture_failed")
 
 CORS_HEADERS = {
     "Content-Type": "application/json",
@@ -48,6 +59,9 @@ def handler(event, context):
     user_id = authz.get("user_id")
     if not user_id:
         return _resp(401, {"error": "unauthorized"})
+
+    body = json.loads(event.get("body") or "{}")
+    _capture_email(user_id, body.get("email"))
 
     # Record the job as RUNNING before we kick off the work, so the frontend can
     # poll its status. Auto-expires after 24h via TTL.

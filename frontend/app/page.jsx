@@ -53,7 +53,7 @@ export default function Dashboard() {
     if (!user) return;
     setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this runs in the background, up to a minute." });
     try {
-      const fresh = await generateAndWait(getToken);
+      const fresh = await generateAndWait(getToken, { email: user?.primaryEmailAddress?.emailAddress });
       if (typeof window !== "undefined") window.history.replaceState(null, "", "/");
       setSelected(null);
       setData(fresh);

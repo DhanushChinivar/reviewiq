@@ -23,11 +23,11 @@ export function fetchReports(getToken) {
  * Throws: Error with .failed=true (job failed, message is user-friendly),
  *         or "timeout".
  */
-export async function generateAndWait(getToken, { timeoutMs = 120000, intervalMs = 3000 } = {}) {
+export async function generateAndWait(getToken, { email, timeoutMs = 120000, intervalMs = 3000 } = {}) {
   const res = await authFetch("/reports/generate", getToken, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}), // user_id comes from the token, not the body
+    body: JSON.stringify({ email }), // user_id from the token; email captured for report delivery
   });
   if (!res.ok && res.status !== 202) {
     throw new Error(`Couldn't start the analysis (${res.status}). Please try again.`);

@@ -37,7 +37,7 @@ export default function Connect() {
       const res = await fetch(`${API_BASE}/reviews/upload`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ filename: file.name, csv }), // user_id from the token
+        body: JSON.stringify({ filename: file.name, csv, email: user?.primaryEmailAddress?.emailAddress }), // user_id from the token
       });
       if (!res.ok) throw new Error(`Upload failed (${res.status})`);
       const data = await res.json();
@@ -55,7 +55,7 @@ export default function Connect() {
     if (!user) return;
     setGen({ kind: "busy", msg: "Analyzing your reviews with AI… this runs in the background and can take up to a minute." });
     try {
-      const fresh = await generateAndWait(getToken);
+      const fresh = await generateAndWait(getToken, { email: user?.primaryEmailAddress?.emailAddress });
       const row = fresh?.history?.[0] || {};
       setGen({
         kind: "ok",

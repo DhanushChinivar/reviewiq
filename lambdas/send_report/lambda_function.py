@@ -23,15 +23,27 @@ ses = boto3.client("ses")
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 reports_table = dynamodb.Table(os.environ["REPORTS_TABLE"])
+users_table = dynamodb.Table(os.environ["USERS_TABLE"])
 DATA_BUCKET = os.environ["DATA_BUCKET"]
 SENDER = os.environ["SENDER_EMAIL"]
 DEFAULT_RECIPIENT = os.environ["DEFAULT_RECIPIENT"]
 
 
+def _user_email(user_id):
+    """The user's own email from the users table, if we've captured it."""
+    try:
+        item = users_table.get_item(Key={"user_id": user_id}).get("Item")
+        return item.get("email") if item else None
+    except Exception:  # noqa: BLE001 — never let a lookup failure block the send
+        logger.exception("user_email_lookup_failed")
+        return None
+
+
 def handler(event, context):
     event = event or {}
     user_id = event.get("user_id", "u123")
-    recipient = event.get("recipient", DEFAULT_RECIPIENT)
+    # Send to the user's own email; fall back to the default only if unknown.
+    recipient = event.get("recipient") or _user_email(user_id) or DEFAULT_RECIPIENT
 
     # Latest report for this user (SK = report_date, newest first).
     resp = reports_table.query(
