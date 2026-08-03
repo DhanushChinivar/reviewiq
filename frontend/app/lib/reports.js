@@ -6,47 +6,42 @@ export function fetchReports(userId) {
   return fetch(`${API_BASE}/reports?user_id=${encodeURIComponent(userId)}`).then((r) => r.json());
 }
 
-async function latestCreatedAt(userId) {
-  try {
-    const d = await fetchReports(userId);
-    return d?.history?.[0]?.created_at || null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Kick off an on-demand report and wait for it to appear.
+ * Kick off an on-demand report and wait for it to finish, tracking JOB STATUS.
  *
- * The API returns 202 immediately (the analysis runs in the background, free of
- * API Gateway's 29s limit), so we poll GET /reports until a report with a NEWER
- * created_at than before shows up. Returns the fresh reports payload.
+ * The trigger returns 202 with a job_id (the analysis runs async, free of API
+ * Gateway's 29s limit). We poll GET /reports?job=<id> and react to the job's
+ * status: SUCCEEDED → return the fresh report data; FAILED → throw the job's
+ * friendly error (so a background failure becomes a real "it failed" message,
+ * not a silent hang).
  *
- * Throws: Error with .code === 404 (no reviews), "timeout", or a status message.
+ * Throws: Error with .failed=true (job failed, message is user-friendly),
+ *         or "timeout".
  */
 export async function generateAndWait(userId, { timeoutMs = 120000, intervalMs = 3000 } = {}) {
-  const before = await latestCreatedAt(userId);
-
   const res = await fetch(`${API_BASE}/reports/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId }),
   });
-  if (res.status === 404) {
-    const e = new Error("no_reviews");
-    e.code = 404;
-    throw e;
-  }
   if (!res.ok && res.status !== 202) {
-    throw new Error(`Generation failed (${res.status})`);
+    throw new Error(`Couldn't start the analysis (${res.status}). Please try again.`);
   }
+  const { job_id } = await res.json();
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await sleep(intervalMs);
-    const data = await fetchReports(userId);
-    const newest = data?.history?.[0]?.created_at || null;
-    if (newest && newest !== before) return data; // fresh report landed
+    const data = await fetch(
+      `${API_BASE}/reports?user_id=${encodeURIComponent(userId)}&job=${encodeURIComponent(job_id)}`
+    ).then((r) => r.json());
+    const status = data?.job?.status;
+    if (status === "FAILED") {
+      const e = new Error(data.job.error || "Analysis failed. Please try again.");
+      e.failed = true;
+      throw e;
+    }
+    if (status === "SUCCEEDED") return data; // report is already written; data has it
   }
   throw new Error("timeout");
 }

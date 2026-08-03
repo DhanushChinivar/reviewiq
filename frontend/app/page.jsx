@@ -54,8 +54,8 @@ export default function Dashboard() {
       setData(fresh);
       setGen(null);
     } catch (e) {
-      if (e.code === 404) setGen({ kind: "err", msg: "No reviews yet — upload some from the Connect page first." });
-      else if (e.message === "timeout") setGen({ kind: "err", msg: "Still analyzing — give it a moment, then refresh." });
+      if (e.failed) setGen({ kind: "err", msg: e.message }); // real failure notice from the job
+      else if (e.message === "timeout") setGen({ kind: "err", msg: "Still analyzing — taking longer than usual. Check back in a moment." });
       else setGen({ kind: "err", msg: e.message || "Something went wrong." });
     }
   }

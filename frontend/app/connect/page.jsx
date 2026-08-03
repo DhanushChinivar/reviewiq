@@ -61,8 +61,8 @@ export default function Connect() {
         msg: `Report ready — sentiment ${row.sentiment_score}/100 (${fmtDate(row.report_date)}).`,
       });
     } catch (e) {
-      if (e.code === 404) setGen({ kind: "err", msg: "No reviews found yet. Upload a file first, then generate." });
-      else if (e.message === "timeout") setGen({ kind: "err", msg: "Still analyzing — give it a moment, then check the dashboard." });
+      if (e.failed) setGen({ kind: "err", msg: e.message }); // real failure notice from the job
+      else if (e.message === "timeout") setGen({ kind: "err", msg: "Still analyzing — taking longer than usual. Check the dashboard shortly." });
       else setGen({ kind: "err", msg: e.message || "Something went wrong." });
     }
   }

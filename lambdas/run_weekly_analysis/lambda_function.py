@@ -35,6 +35,7 @@ s3 = boto3.client("s3")
 lambda_client = boto3.client("lambda")
 reviews_table = dynamodb.Table(os.environ["REVIEWS_TABLE"])
 reports_table = dynamodb.Table(os.environ["REPORTS_TABLE"])
+jobs_table = dynamodb.Table(os.environ["JOBS_TABLE"])
 DATA_BUCKET = os.environ["DATA_BUCKET"]
 MODEL_ID = os.environ["MODEL_ID"]
 SEND_REPORT_FUNCTION = os.environ.get("SEND_REPORT_FUNCTION")
@@ -76,17 +77,34 @@ def handler(event, context):
     if is_http and (event.get("httpMethod") or "").upper() == "OPTIONS":
         return _http_resp(200, {"ok": True})
 
+    # On-demand async invokes carry a job_id so we can report background success
+    # or FAILURE back to the polling frontend (an async invoke can't return to
+    # the browser directly — see generateTrigger).
+    job_id = None if is_http else event.get("job_id")
+
     # Wrap the work so ANY failure in HTTP mode still returns a CORS response.
     # Without this, an unhandled exception yields a bare API Gateway 5xx with no
     # Access-Control-Allow-Origin header — which the browser reports only as the
     # opaque "Failed to fetch".
     try:
-        return _run(event, is_http)
+        result = _run(event, is_http)
     except Exception as e:  # noqa: BLE001 — surface a clean error to the client
         logger.exception("analysis_failed")
+        if job_id:
+            # Definitive FAILED status; swallow so Lambda doesn't async-retry into
+            # a confusing FAILED→SUCCEEDED flip. The user can just click again.
+            _set_job(job_id, "FAILED", error=_friendly(e))
+            return {"status": "failed", "job_id": job_id}
         if is_http:
             return _http_resp(500, {"error": "analysis_failed", "detail": str(e)[:300]})
         raise
+
+    if job_id:
+        if isinstance(result, dict) and result.get("reports_created"):
+            _set_job(job_id, "SUCCEEDED")
+        else:  # _run returned a no_reviews result (not an exception)
+            _set_job(job_id, "FAILED", error="No reviews found to analyze yet — upload some first.")
+    return result
 
 
 def _run(event, is_http):
@@ -201,6 +219,31 @@ def _generate_for_user(user_id, reviews, total=None):
 
 def _http_resp(status, body):
     return {"statusCode": status, "headers": CORS_HEADERS, "body": json.dumps(body)}
+
+
+def _set_job(job_id, status, error=None):
+    # "status" and "error" are DynamoDB reserved words → alias them.
+    names = {"#s": "status"}
+    vals = {":s": status, ":u": datetime.now(timezone.utc).isoformat()}
+    expr = "SET #s = :s, updated_at = :u"
+    if error:
+        names["#e"] = "error"
+        vals[":e"] = error
+        expr += ", #e = :e"
+    try:
+        jobs_table.update_item(
+            Key={"job_id": job_id}, UpdateExpression=expr,
+            ExpressionAttributeNames=names, ExpressionAttributeValues=vals,
+        )
+    except Exception:  # noqa: BLE001 — never let job bookkeeping crash the analysis
+        logger.exception("job_status_update_failed")
+
+
+def _friendly(e):
+    s = f"{type(e).__name__}: {e}"
+    if "Throttl" in s or "TooManyRequests" in s:
+        return "Our AI service is busy right now — please try again in a moment."
+    return "Something went wrong while analyzing your reviews. Please try again."
 
 
 def _extract_json(text):

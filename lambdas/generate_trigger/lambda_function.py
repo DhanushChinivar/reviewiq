@@ -1,19 +1,21 @@
 """reviewiq — generateTrigger Lambda.
 
 POST /reports/generate {"user_id": ...}
-  → asynchronously invokes run_weekly_analysis for that user and returns 202
-    immediately.
+  → creates a job record (status=RUNNING), asynchronously invokes
+    run_weekly_analysis for that user, and returns 202 with the job_id.
 
 Why a separate trigger: the AI analysis takes 30-60s, but API Gateway hard-caps
 a request at 29s. So instead of making the browser wait for the analysis (and
 timing out), this returns right away and the analysis runs in the background
-(async Lambda invoke). The frontend then polls GET /reports until the new report
-appears. Classic decoupling — the same reason SQS sits in the ingest path.
+(async Lambda invoke). The frontend then polls GET /reports?job=<job_id> for the
+job status — so a background FAILURE surfaces as a real error, not a silent hang.
 """
 
 import json
 import logging
 import os
+import time
+import uuid
 
 import boto3
 
@@ -21,7 +23,9 @@ logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 lambda_client = boto3.client("lambda")
+dynamodb = boto3.resource("dynamodb")
 ANALYSIS_FUNCTION = os.environ["ANALYSIS_FUNCTION"]
+jobs_table = dynamodb.Table(os.environ["JOBS_TABLE"])
 
 CORS_HEADERS = {
     "Content-Type": "application/json",
@@ -44,12 +48,24 @@ def handler(event, context):
     if not user_id:
         return _resp(400, {"error": "user_id is required"})
 
+    # Record the job as RUNNING before we kick off the work, so the frontend can
+    # poll its status. Auto-expires after 24h via TTL.
+    job_id = str(uuid.uuid4())
+    now = int(time.time())
+    jobs_table.put_item(Item={
+        "job_id": job_id,
+        "user_id": user_id,
+        "status": "RUNNING",
+        "created_at": now,
+        "expires_at": now + 86400,
+    })
+
     # Fire-and-forget: InvocationType="Event" returns immediately; the analysis
     # Lambda runs on its own (up to its 120s timeout), free of the 29s API cap.
     lambda_client.invoke(
         FunctionName=ANALYSIS_FUNCTION,
         InvocationType="Event",
-        Payload=json.dumps({"user_id": user_id}).encode(),
+        Payload=json.dumps({"user_id": user_id, "job_id": job_id}).encode(),
     )
-    logger.info(json.dumps({"event": "analysis_triggered", "user_id": user_id}))
-    return _resp(202, {"status": "started"})
+    logger.info(json.dumps({"event": "analysis_triggered", "user_id": user_id, "job_id": job_id}))
+    return _resp(202, {"status": "started", "job_id": job_id})
