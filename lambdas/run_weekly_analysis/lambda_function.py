@@ -25,6 +25,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 import boto3
+from boto3.dynamodb.conditions import Key
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -107,6 +108,34 @@ def handler(event, context):
     return result
 
 
+def _query_user_reviews(user_id):
+    """All of one user's reviews via QUERY on the partition key — paginated.
+
+    Reads only this user's partition (not the whole table), and follows
+    LastEvaluatedKey so results larger than DynamoDB's 1 MB page aren't dropped.
+    """
+    items, kwargs = [], {"KeyConditionExpression": Key("user_id").eq(user_id)}
+    while True:
+        resp = reviews_table.query(**kwargs)
+        items.extend(resp.get("Items", []))
+        start = resp.get("LastEvaluatedKey")
+        if not start:
+            return items
+        kwargs["ExclusiveStartKey"] = start
+
+
+def _scan_all_reviews():
+    """Every review via SCAN — paginated (used by the weekly all-users run)."""
+    items, kwargs = [], {}
+    while True:
+        resp = reviews_table.scan(**kwargs)
+        items.extend(resp.get("Items", []))
+        start = resp.get("LastEvaluatedKey")
+        if not start:
+            return items
+        kwargs["ExclusiveStartKey"] = start
+
+
 def _run(event, is_http):
     if is_http:
         body = json.loads(event.get("body") or "{}")
@@ -117,22 +146,24 @@ def _run(event, is_http):
         # A direct/manual async invoke may still target one user.
         target_user = event.get("user_id")
 
-    items = reviews_table.scan().get("Items", [])
-    by_user = defaultdict(list)
-    for it in items:
-        by_user[it.get("user_id", "unknown")].append(it)
-
-    # In on-demand mode, only analyse the requesting user.
+    # Read reviews with the right DynamoDB access pattern (both fully paginated,
+    # so nothing is silently dropped past DynamoDB's 1 MB per-page limit):
+    #   * one user  → QUERY that user's partition — reads only their reviews,
+    #                 not the whole table.
+    #   * all users → SCAN — the weekly run genuinely needs every review.
     if target_user:
-        reviews = by_user.get(target_user, [])
+        reviews = _query_user_reviews(target_user)
         if not reviews:
             msg = {"status": "no_reviews", "reports_created": 0, "user_id": target_user}
             return _http_resp(404, msg) if is_http else msg
         by_user = {target_user: reviews}
-
-    if not by_user:
-        msg = {"status": "no_reviews", "reports_created": 0}
-        return _http_resp(404, msg) if is_http else msg
+    else:
+        by_user = defaultdict(list)
+        for it in _scan_all_reviews():
+            by_user[it.get("user_id", "unknown")].append(it)
+        if not by_user:
+            msg = {"status": "no_reviews", "reports_created": 0}
+            return _http_resp(404, msg) if is_http else msg
 
     last_report = None
     reports_created = 0
