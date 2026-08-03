@@ -20,6 +20,15 @@ The worker writes rows via DynamoDB `BatchWriteItem` (25/call) so a 1000+ row fi
 finishes well inside the Lambda timeout; the SQS visibility timeout (360s) is set to
 6× the worker timeout so a slow batch is never redelivered mid-flight.
 
+**Worker reliability (production hardening):**
+- **Partial batch failures** — the event source mapping has `ReportBatchItemFailures`
+  enabled and the worker returns a `batchItemFailures` list, so one bad message in a
+  batch of 10 is retried *alone* instead of forcing all 10 to reprocess.
+- **Idempotent writes** — `review_id` is deterministic (`job_id#row`), so a retry (SQS is
+  at-least-once) overwrites the same items instead of creating duplicate rows.
+- **Row-level tolerance** — a single malformed CSV row is skipped and logged; only S3/DynamoDB
+  errors propagate (and are therefore retried, then DLQ'd after 3 attempts).
+
 **Analysis & delivery — one engine (`runWeeklyAnalysis`), two triggers:**
 
 ```
@@ -58,7 +67,7 @@ CloudFront (Next.js, Clerk auth) → GET /reports → getReports → DynamoDB + 
 | **Lambda** (Python 3.13, arm64) | `reviewiq-ingest-reviews`, `reviewiq-sqs-worker`, `reviewiq-shopify-oauth`, `reviewiq-shopify-pull`, `reviewiq-run-weekly-analysis`, `reviewiq-generate-trigger`, `reviewiq-send-report`, `reviewiq-get-reports`, `reviewiq-hello` |
 | **DynamoDB** (on-demand) | `reviewiq-users`, `-stores`, `-shopify-tokens`, `-reviews`, `-reports` |
 | **S3** | `reviewiq-data` (private, versioned, AES256), `reviewiq-frontend-dc` (private, CloudFront-only) |
-| **SQS** | `reviewiq-ingest` (visibility 360s = 6× worker timeout) + `reviewiq-ingest-dlq` (maxReceiveCount 3) |
+| **SQS** | `reviewiq-ingest` (visibility 360s = 6× worker timeout, SSE-SQS, `ReportBatchItemFailures`) + `reviewiq-ingest-dlq` (maxReceiveCount 3, 14-day retention) |
 | **API Gateway** | `reviewiq-api` — `POST /reviews/upload`, `POST /reports/generate`, `GET /reports`, `GET /shopify/callback`, `GET /hello` |
 | **Bedrock** | Claude Sonnet 4.6 via inference profile `us.anthropic.claude-sonnet-4-6` |
 | **KMS** | `alias/reviewiq-shopify-tokens` (encrypts Shopify tokens) |
@@ -66,6 +75,21 @@ CloudFront (Next.js, Clerk auth) → GET /reports → getReports → DynamoDB + 
 | **EventBridge** | `reviewiq-weekly-analysis` (Mon 7am AEST), `reviewiq-shopify-pull` (Sun 11pm AEST) |
 | **CloudFront** | Distribution `E2PAITDDCLJOFA` + OAC + URL-rewrite function → the frontend |
 | **IAM** | One least-privilege execution role per Lambda |
+| **CloudWatch + SNS** | 4 alarms → SNS `reviewiq-alerts` (email): worker errors, worker duration >50s, ingest backlog, DLQ-not-empty |
+
+---
+
+## Reliability & monitoring
+
+CloudWatch alarms publish to the `reviewiq-alerts` SNS topic (email subscription).
+All use `treat-missing-data = notBreaching` so idle periods don't false-alarm.
+
+| Alarm | Metric | Fires when | Why it matters |
+|---|---|---|---|
+| `reviewiq-worker-errors` | Lambda `Errors` (sqs_worker) | ≥ 1 in 5 min | The consumer is failing |
+| `reviewiq-worker-duration-high` | Lambda `Duration` max | > 50s (timeout is 60s) | Approaching timeout → will start DLQ'ing |
+| `reviewiq-ingest-backlog` | SQS `ApproximateAgeOfOldestMessage` | > 300s | Worker not keeping up; messages piling up |
+| `reviewiq-dlq-not-empty` | SQS `ApproximateNumberOfMessagesVisible` (DLQ) | > 0 | **Poison messages** — something failed 3×; investigate |
 
 ---
 
@@ -90,7 +114,7 @@ CloudFront (Next.js, Clerk auth) → GET /reports → getReports → DynamoDB + 
 | **Bedrock model** | Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-6`) | Sonnet 5 not yet available to this account; same tier + cost. Switch via `MODEL_ID` env var |
 | **Knowledge Base** | **Skipped** — inject context into the prompt | OpenSearch Serverless ~$350/mo always-on floor is the one real cost trap |
 | **Frontend hosting** | S3 (private) + CloudFront + OAC | Secure static hosting; bucket never public |
-| **Ingestion** | SQS producer→consumer with DLQ; worker uses `BatchWriteItem` | Decouple upload from processing; batch writes keep 1000+ row files inside the Lambda timeout |
+| **Ingestion** | SQS producer→consumer with DLQ; `BatchWriteItem`; partial-batch failures + idempotent keys | Decouple upload from processing; batch writes keep 1000+ row files fast; retries never duplicate or reprocess good messages |
 | **On-demand reports** | Trigger Lambda returns `202`, analysis runs async, dashboard polls | Bedrock analysis (30–60s) exceeds API Gateway's 29s cap — so never block the request on it |
 | **Secrets** | Shopify tokens KMS-encrypted at rest | Never store/log plaintext credentials |
 | **IAM** | Least-privilege role per Lambda | Each function gets only the actions/resources it needs |
